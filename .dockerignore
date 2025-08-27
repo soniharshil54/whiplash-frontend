@@ -1,0 +1,21 @@
+# Node modules
+node_modules
+npm-debug.log
+yarn-error.log
+
+# Build output
+dist
+
+# Env & config
+.env
+.env.*.local
+
+# OS / IDE files
+.DS_Store
+.vscode
+.idea
+*.swp
+
+# Git
+.git
+.gitignore

@@ -1,0 +1,11 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm install
+
+# Copy the rest of the code (but volumes will override in dev)
+COPY . .
+
+CMD ["npm", "run", "dev"]
