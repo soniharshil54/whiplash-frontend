@@ -1,0 +1,7 @@
+services:
+  app:
+    platform: linux/amd64   # 👈 force x86_64
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${IMAGE_URI}
