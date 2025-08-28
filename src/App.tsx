@@ -5,7 +5,7 @@ import './App.css'
 
 function App() {
   const [count, setCount] = useState(0)
-  const version = '1.0.7'
+  const version = '1.1.7'
 
   return (
     <>
