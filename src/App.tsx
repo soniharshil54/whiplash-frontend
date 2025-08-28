@@ -5,6 +5,7 @@ import './App.css'
 
 function App() {
   const [count, setCount] = useState(0)
+  const version = '1.0.5'
 
   return (
     <>
@@ -19,7 +20,7 @@ function App() {
       <h1>Vite + React</h1>
       <div className="card">
         <button onClick={() => setCount((count) => count + 1)}>
-          count is {count}
+          count is {count} and version is {version}
         </button>
         <p>
           Edit <code>src/App.tsx</code> and save to test HMR
