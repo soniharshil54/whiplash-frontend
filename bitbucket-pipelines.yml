@@ -2,24 +2,6 @@ image: docker:24.0.6-cli
 options:
   docker: true
 
-pipelines:
-  branches:
-    main:
-      - step:
-          <<: *build-push
-          deployment: prod
-      - step:
-          <<: *deploy
-          deployment: prod
-
-    staging:
-      - step:
-          <<: *build-push
-          deployment: staging
-      - step:
-          <<: *deploy
-          deployment: staging
-
 definitions:
   steps:
     - step: &build-push
@@ -51,9 +33,6 @@ definitions:
           - AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           - IMAGE_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${REPO_NAME}:${VERSION}"
 
-          # print all deployment variables
-          - env | grep '^VITE_'
-
           # Build .env from Deployment variables (VITE_*)
           - |
             : > .env
@@ -62,9 +41,8 @@ definitions:
               printf '%s=%s\n' "$name" "$val" >> .env
             done
             printf 'VITE_DEPLOY_ENV=%s\nVITE_BUILD_VERSION=%s\n' "$DEPLOY_ENV" "$VERSION" >> .env
-            echo "Using Vite envs:" && sed 's/=.*/=***REDACTED***/' .env
-            cat .env
-            # ensure .env is in build context (check your .dockerignore)
+            echo "Using Vite envs:"
+            awk -F= '{print $1"=***REDACTED***"}' .env  # avoid leaking values
 
           # ensure ECR repo exists
           - |
@@ -131,3 +109,21 @@ definitions:
               exit $rc
             fi
             aws cloudformation wait stack-update-complete --stack-name "${STACK_NAME}"
+
+pipelines:
+  branches:
+    main:
+      - step:
+          <<: *build-push
+          deployment: prod
+      - step:
+          <<: *deploy
+          deployment: prod
+
+    staging:
+      - step:
+          <<: *build-push
+          deployment: staging
+      - step:
+          <<: *deploy
+          deployment: staging
