@@ -41,8 +41,7 @@ definitions:
               printf '%s=%s\n' "$name" "$val" >> .env
             done
             printf 'VITE_DEPLOY_ENV=%s\nVITE_BUILD_VERSION=%s\n' "$DEPLOY_ENV" "$VERSION" >> .env
-            echo "Using Vite envs:"
-            awk -F= '{print $1"=***REDACTED***"}' .env  # avoid leaking values
+            echo "Using Vite envs:" && awk -F= '{print $1"=***REDACTED***"}' .env
 
           # ensure ECR repo exists
           - |
@@ -115,15 +114,13 @@ pipelines:
     main:
       - step:
           <<: *build-push
-          deployment: prod
+          deployment: prod    # only here
       - step:
-          <<: *deploy
-          deployment: prod
+          <<: *deploy         # no deployment tag
 
     staging:
       - step:
           <<: *build-push
-          deployment: staging
+          deployment: staging # only here
       - step:
-          <<: *deploy
-          deployment: staging
+          <<: *deploy         # no deployment tag
