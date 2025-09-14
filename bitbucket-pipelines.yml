@@ -6,91 +6,128 @@ pipelines:
   branches:
     main:
       - step:
-          name: Build & Push (frontend)
-          services: [docker]
-          script:
-            - apk add --no-cache aws-cli jq bash
-            - set -euo pipefail
-
-            # require envs (no defaults)
-            - '[ -n "${AWS_REGION}" ] || { echo "AWS_REGION is required"; exit 1; }'
-            - '[ -n "${PROJECT}" ]    || { echo "PROJECT is required"; exit 1; }'
-            - '[ -n "${STAGE}" ]      || { echo "STAGE is required"; exit 1; }'
-
-            # computed values
-            - export DOCKER_DEFAULT_PLATFORM=linux/amd64
-            - REPO_NAME="${PROJECT}-${STAGE}-frontend"
-            - VERSION=$(cat VERSION)
-            - AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-            - IMAGE_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${REPO_NAME}:${VERSION}"
-
-            # ensure ECR repo exists
-            - |
-              if ! aws ecr describe-repositories --repository-names "${REPO_NAME}" --region "${AWS_REGION}" >/dev/null 2>&1; then
-                echo "Creating ECR repository: ${REPO_NAME}"
-                aws ecr create-repository --repository-name "${REPO_NAME}" --region "${AWS_REGION}" >/dev/null 2>&1 || true
-              fi
-
-            # ECR login
-            - aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-
-            # disable BuildKit (Bitbucket disallows privileged buildkit)
-            - export DOCKER_BUILDKIT=0
-            - export COMPOSE_DOCKER_CLI_BUILD=0
-
-            # compose build & push
-            - export IMAGE_URI
-            - docker compose -f docker-compose.build.yml build
-            - docker push "${IMAGE_URI}"
-
-            # hand off version to deploy step
-            - echo "${VERSION}" > .version
-          artifacts:
-            - .version
-
+          <<: *build-push
+          deployment: prod
       - step:
-          name: Deploy (update FrontendImageTag)
-          script:
-            - apk add --no-cache aws-cli jq bash
-            - set -euo pipefail
+          <<: *deploy
+          deployment: prod
 
-            # require envs (no defaults)
-            - '[ -n "${AWS_REGION}" ] || { echo "AWS_REGION is required"; exit 1; }'
-            - '[ -n "${PROJECT}" ]    || { echo "PROJECT is required"; exit 1; }'
-            - '[ -n "${STAGE}" ]      || { echo "STAGE is required"; exit 1; }'
+    staging:
+      - step:
+          <<: *build-push
+          deployment: staging
+      - step:
+          <<: *deploy
+          deployment: staging
 
-            - STACK_NAME="${PROJECT}-${STAGE}"
-            - VERSION=$(cat .version)
+definitions:
+  steps:
+    - step: &build-push
+        name: Build & Push (frontend)
+        services: [docker]
+        script:
+          - apk add --no-cache aws-cli jq bash
+          - set -euo pipefail
 
-            # require existing stack (Option A)
-            - |
-              STATUS=$(aws cloudformation describe-stacks --stack-name "${STACK_NAME}" --query "Stacks[0].StackStatus" --output text 2>/dev/null || true)
-              if [[ -z "$STATUS" || "$STATUS" == "STACK_NOT_FOUND" ]]; then
-                echo "❌ Stack ${STACK_NAME} not found. Create it once from infra (cdk deploy)."
-                exit 1
-              fi
-              if [[ "$STATUS" == "CREATE_IN_PROGRESS" ]]; then
-                aws cloudformation wait stack-create-complete --stack-name "${STACK_NAME}"
-              elif [[ "$STATUS" == "UPDATE_IN_PROGRESS" || "$STATUS" == "UPDATE_COMPLETE_CLEANUP_IN_PROGRESS" ]]; then
-                aws cloudformation wait stack-update-complete --stack-name "${STACK_NAME}"
-              fi
+          # branch → deploy env
+          - |
+            if [ "$BITBUCKET_BRANCH" = "main" ]; then
+              DEPLOY_ENV="prod"
+            elif [ "$BITBUCKET_BRANCH" = "staging" ]; then
+              DEPLOY_ENV="staging"
+            else
+              echo "❌ Unsupported branch $BITBUCKET_BRANCH"; exit 1
+            fi
+            echo "$DEPLOY_ENV" > .deploy_env
 
-            # param-only update: flip FrontendImageTag, preserve BackendImageTag
-            - |
-              set +e
-              aws cloudformation update-stack \
-                --stack-name "${STACK_NAME}" \
-                --use-previous-template \
-                --capabilities CAPABILITY_NAMED_IAM CAPABILITY_IAM \
-                --parameters \
-                  ParameterKey=FrontendImageTag,ParameterValue="${VERSION}" \
-                  ParameterKey=BackendImageTag,UsePreviousValue=true \
-                --region "${AWS_REGION}"
-              rc=$?
-              set -e
-              if [[ $rc -eq 254 ]]; then
-                echo "ℹ️ No updates to perform."
-              elif [[ $rc -ne 0 ]]; then
-                exit $rc
-              fi
+          # required
+          - '[ -n "${AWS_REGION}" ] || { echo "AWS_REGION is required"; exit 1; }'
+          - '[ -n "${PROJECT}" ]    || { echo "PROJECT is required"; exit 1; }'
+
+          # image + repo
+          - export DOCKER_DEFAULT_PLATFORM=linux/amd64
+          - REPO_NAME="${PROJECT}-${DEPLOY_ENV}-frontend"
+          - VERSION=$(cat VERSION)
+          - AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          - IMAGE_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${REPO_NAME}:${VERSION}"
+
+          # print all deployment variables
+          - env | grep '^VITE_'
+
+          # Build .env from Deployment variables (VITE_*)
+          - |
+            : > .env
+            for name in $(env | cut -d= -f1 | grep '^VITE_'); do
+              val=$(printenv "$name")
+              printf '%s=%s\n' "$name" "$val" >> .env
+            done
+            printf 'VITE_DEPLOY_ENV=%s\nVITE_BUILD_VERSION=%s\n' "$DEPLOY_ENV" "$VERSION" >> .env
+            echo "Using Vite envs:" && sed 's/=.*/=***REDACTED***/' .env
+            cat .env
+            # ensure .env is in build context (check your .dockerignore)
+
+          # ensure ECR repo exists
+          - |
+            if ! aws ecr describe-repositories --repository-names "${REPO_NAME}" --region "${AWS_REGION}" >/dev/null 2>&1; then
+              aws ecr create-repository --repository-name "${REPO_NAME}" --region "${AWS_REGION}" >/dev/null 2>&1 || true
+            fi
+
+          # ECR login + build (no BuildKit) + push
+          - aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          - export DOCKER_BUILDKIT=0
+          - export COMPOSE_DOCKER_CLI_BUILD=0
+          - export IMAGE_URI
+          - docker compose -f docker-compose.build.yml build
+          - docker push "${IMAGE_URI}"
+
+          # hand off to deploy
+          - echo "${VERSION}" > .version
+        artifacts:
+          - .deploy_env
+          - .version
+
+    - step: &deploy
+        name: Deploy (update FrontendImageTag)
+        script:
+          - apk add --no-cache aws-cli jq bash
+          - set -euo pipefail
+
+          - DEPLOY_ENV=$(cat .deploy_env)
+          - VERSION=$(cat .version)
+
+          # required
+          - '[ -n "${AWS_REGION}" ] || { echo "AWS_REGION is required"; exit 1; }'
+          - '[ -n "${PROJECT}" ]    || { echo "PROJECT is required"; exit 1; }'
+
+          - STACK_NAME="${PROJECT}-${DEPLOY_ENV}"
+
+          # wait if stack busy
+          - |
+            STATUS=$(aws cloudformation describe-stacks --stack-name "${STACK_NAME}" --query "Stacks[0].StackStatus" --output text 2>/dev/null || true)
+            if [ -z "$STATUS" ] || [ "$STATUS" = "STACK_NOT_FOUND" ]; then
+              echo "❌ Stack ${STACK_NAME} not found. Create it once from infra (cdk deploy)."; exit 1
+            fi
+            if [ "$STATUS" = "CREATE_IN_PROGRESS" ]; then
+              aws cloudformation wait stack-create-complete --stack-name "${STACK_NAME}"
+            elif [ "$STATUS" = "UPDATE_IN_PROGRESS" ] || [ "$STATUS" = "UPDATE_COMPLETE_CLEANUP_IN_PROGRESS" ]; then
               aws cloudformation wait stack-update-complete --stack-name "${STACK_NAME}"
+            fi
+
+          # image-only update; envs are baked at build time
+          - |
+            set +e
+            aws cloudformation update-stack \
+              --stack-name "${STACK_NAME}" \
+              --use-previous-template \
+              --capabilities CAPABILITY_NAMED_IAM CAPABILITY_IAM \
+              --parameters \
+                ParameterKey=FrontendImageTag,ParameterValue="${VERSION}" \
+                ParameterKey=BackendImageTag,UsePreviousValue=true \
+              --region "${AWS_REGION}"
+            rc=$?; set -e
+            if [ $rc -eq 254 ]; then
+              echo "ℹ️ No updates to perform."
+            elif [ $rc -ne 0 ]; then
+              exit $rc
+            fi
+            aws cloudformation wait stack-update-complete --stack-name "${STACK_NAME}"
