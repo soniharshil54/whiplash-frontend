@@ -1,11 +1,20 @@
 import { useState } from 'react'
 import reactLogo from './assets/react.svg'
 import viteLogo from '/vite.svg'
+import { SAMPLE_ENV_KEY, API_URL } from './config'
 import './App.css'
 
 function App() {
   const [count, setCount] = useState(0)
   const version = '1.0.9'
+
+  // Debug: Log environment variables
+  console.log('Environment variables:', {
+    VITE_API_URL: import.meta.env.VITE_API_URL,
+    VITE_SAMPLE_ENV_KEY: import.meta.env.VITE_SAMPLE_ENV_KEY,
+    SAMPLE_ENV_KEY,
+    API_URL
+  });
 
   return (
     <>
@@ -21,6 +30,8 @@ function App() {
       <div className="card">
         <button onClick={() => setCount((count) => count + 1)}>
           count is {count} and version is {version}
+          and sample env key is {SAMPLE_ENV_KEY}
+          and api url is {API_URL}
         </button>
         <p>
           Edit <code>src/App.tsx</code> and save to test HMR
