@@ -3,8 +3,5 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      args:
-        VITE_SAMPLE_ENV_KEY: ${VITE_SAMPLE_ENV_KEY}
-        VITE_API_URL: ${VITE_API_URL}
     ports:
       - "8081:80"

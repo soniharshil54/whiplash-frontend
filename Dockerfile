@@ -5,15 +5,6 @@ COPY package*.json ./
 RUN npm install
 COPY . .
 
-# Copy .env file if it exists (for local development)
-COPY .env* ./
-
-# Set environment variables for build
-ARG VITE_SAMPLE_ENV_KEY
-ARG VITE_API_URL
-ENV VITE_SAMPLE_ENV_KEY=$VITE_SAMPLE_ENV_KEY
-ENV VITE_API_URL=$VITE_API_URL
-
 RUN npm run build
 
 FROM nginx:alpine

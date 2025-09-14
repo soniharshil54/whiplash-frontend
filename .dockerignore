@@ -7,7 +7,7 @@ yarn-error.log
 dist
 
 # Env & config
-.env
+# .env
 .env.*.local
 
 # OS / IDE files
