@@ -84,9 +84,9 @@ definitions:
         script:
           - apk add --no-cache aws-cli bash jq
           - set -euo pipefail
-          - echo "DEPLOY_ENV - ${DEPLOY_ENV}"
 
           - DEPLOY_ENV="$(cat .deploy_env)"
+          - echo "DEPLOY_ENV - ${DEPLOY_ENV}"
           - VERSION="$(cat .version)"
 
           - '[ -n "${AWS_REGION:-}" ] || { echo "AWS_REGION is required"; exit 1; }'
