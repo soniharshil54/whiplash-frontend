@@ -10,7 +10,7 @@ export const stagingConfig = {
       port: 3000,
       healthCheck: {
         port: '3000',
-        path: '/api/healthcheck',
+        path: '/',
         interval: 30,
         timeout: 10,
         healthyThreshold: 3,

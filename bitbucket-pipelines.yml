@@ -4,11 +4,11 @@ options:
 
 definitions:
   steps:
-    - step: &build-push
-        name: Build & Push (frontend)
-        services: [docker]
+    - step: &init
+        image: alpine:3.20
+        name: Init (capture deployment env)
         script:
-          - apk add --no-cache aws-cli jq bash
+          - apk add --no-cache bash coreutils
           - set -euo pipefail
 
           # branch → deploy env
@@ -22,9 +22,31 @@ definitions:
             fi
             echo "$DEPLOY_ENV" > .deploy_env
 
+          # keep only VITE_* variables (from Deployment vars injected into this step)
+          # write as KEY=VALUE lines so the build step can turn it into .env
+          - |
+            : > .vite_env
+            while IFS='=' read -r k v; do
+              case "$k" in
+                VITE_*) printf '%s=%s\n' "$k" "$v" >> .vite_env ;;
+              esac
+            done < <(env)
+        artifacts:
+          - .deploy_env
+          - .vite_env
+
+    - step: &build-push
+        name: Build & Push (frontend)
+        services: [docker]
+        script:
+          - apk add --no-cache aws-cli jq bash
+          - set -euo pipefail
+
+          - DEPLOY_ENV="$(cat .deploy_env)"
+
           # required
-          - '[ -n "${AWS_REGION}" ] || { echo "AWS_REGION is required"; exit 1; }'
-          - '[ -n "${PROJECT}" ]    || { echo "PROJECT is required"; exit 1; }'
+          - '[ -n "${AWS_REGION:-}" ] || { echo "AWS_REGION is required"; exit 1; }'
+          - '[ -n "${PROJECT:-}" ]    || { echo "PROJECT is required"; exit 1; }'
 
           # image + repo
           - export DOCKER_DEFAULT_PLATFORM=linux/amd64
@@ -33,21 +55,12 @@ definitions:
           - AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           - IMAGE_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${REPO_NAME}:${VERSION}"
 
-          # Build .env from Deployment variables (VITE_*)
+          # Build .env from VITE_* deployment vars captured in init
           - |
             : > .env
-            for name in $(env | cut -d= -f1 | grep '^VITE_'); do
-              val=$(printenv "$name")
-              printf '%s=%s\n' "$name" "$val" >> .env
-            done
+            cat .vite_env >> .env
             printf 'VITE_DEPLOY_ENV=%s\nVITE_BUILD_VERSION=%s\n' "$DEPLOY_ENV" "$VERSION" >> .env
             echo "Using Vite envs:" && awk -F= '{print $1"=***REDACTED***"}' .env
-
-          # ensure ECR repo exists
-          - |
-            if ! aws ecr describe-repositories --repository-names "${REPO_NAME}" --region "${AWS_REGION}" >/dev/null 2>&1; then
-              aws ecr create-repository --repository-name "${REPO_NAME}" --region "${AWS_REGION}" >/dev/null 2>&1 || true
-            fi
 
           # ECR login + build (no BuildKit) + push
           - aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
@@ -64,63 +77,40 @@ definitions:
           - .version
 
     - step: &deploy
-        name: Deploy (update FrontendImageTag)
+        image: node:20-alpine
+        name: Deploy (CDK)
         script:
-          - apk add --no-cache aws-cli jq bash
+          - apk add --no-cache aws-cli bash jq
           - set -euo pipefail
 
-          - DEPLOY_ENV=$(cat .deploy_env)
-          - VERSION=$(cat .version)
+          - DEPLOY_ENV="$(cat .deploy_env)"
+          - VERSION="$(cat .version)"
 
-          # required
-          - '[ -n "${AWS_REGION}" ] || { echo "AWS_REGION is required"; exit 1; }'
-          - '[ -n "${PROJECT}" ]    || { echo "PROJECT is required"; exit 1; }'
+          - '[ -n "${AWS_REGION:-}" ] || { echo "AWS_REGION is required"; exit 1; }'
+          - '[ -n "${PROJECT:-}" ]    || { echo "PROJECT is required"; exit 1; }'
 
-          - STACK_NAME="${PROJECT}-${DEPLOY_ENV}"
+          - STACK_NAME="${PROJECT}-frontend-${DEPLOY_ENV}"
+          - echo "🛠 Deploying to stack ${STACK_NAME} (env ${DEPLOY_ENV}) with version ${VERSION}"
 
-          # wait if stack busy
-          - |
-            STATUS=$(aws cloudformation describe-stacks --stack-name "${STACK_NAME}" --query "Stacks[0].StackStatus" --output text 2>/dev/null || true)
-            if [ -z "$STATUS" ] || [ "$STATUS" = "STACK_NOT_FOUND" ]; then
-              echo "❌ Stack ${STACK_NAME} not found. Create it once from infra (cdk deploy)."; exit 1
-            fi
-            if [ "$STATUS" = "CREATE_IN_PROGRESS" ]; then
-              aws cloudformation wait stack-create-complete --stack-name "${STACK_NAME}"
-            elif [ "$STATUS" = "UPDATE_IN_PROGRESS" ] || [ "$STATUS" = "UPDATE_COMPLETE_CLEANUP_IN_PROGRESS" ]; then
-              aws cloudformation wait stack-update-complete --stack-name "${STACK_NAME}"
-            fi
-
-          # image-only update; envs are baked at build time
-          - |
-            set +e
-            aws cloudformation update-stack \
-              --stack-name "${STACK_NAME}" \
-              --use-previous-template \
-              --capabilities CAPABILITY_NAMED_IAM CAPABILITY_IAM \
-              --parameters \
-                ParameterKey=FrontendImageTag,ParameterValue="${VERSION}" \
-                ParameterKey=BackendImageTag,UsePreviousValue=true \
-              --region "${AWS_REGION}"
-            rc=$?; set -e
-            if [ $rc -eq 254 ]; then
-              echo "ℹ️ No updates to perform."
-            elif [ $rc -ne 0 ]; then
-              exit $rc
-            fi
-            aws cloudformation wait stack-update-complete --stack-name "${STACK_NAME}"
+          # ensure infra deps are installed and deploy via CDK
+          - cd infra
+          - npm ci
+          - npx cdk --version
+          - npx cdk context --clear || true
+          - npx cdk ls -c stage="${DEPLOY_ENV}"
+          - npx cdk deploy "${STACK_NAME}" --require-approval never -c stage="${DEPLOY_ENV}" -c version="${VERSION}"
 
 pipelines:
   branches:
     main:
       - step:
-          <<: *build-push
-          deployment: prod    # only here
-      - step:
-          <<: *deploy         # no deployment tag
-
+          <<: *init
+          deployment: prod      # deployment tag ONLY here
+      - step: *build-push
+      - step: *deploy
     staging:
       - step:
-          <<: *build-push
-          deployment: staging # only here
-      - step:
-          <<: *deploy         # no deployment tag
+          <<: *init
+          deployment: staging   # deployment tag ONLY here
+      - step: *build-push
+      - step: *deploy

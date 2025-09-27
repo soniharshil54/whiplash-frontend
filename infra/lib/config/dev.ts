@@ -7,10 +7,10 @@ export const devConfig = {
       cpu: 256,
     },
     targetGroup: {
-      port: 3000,
+      port: 80,
       healthCheck: {
-        port: '3000',
-        path: '/api/healthcheck',
+        port: '80',
+        path: '/',
         interval: 30,
         timeout: 10,
         healthyThreshold: 2,
