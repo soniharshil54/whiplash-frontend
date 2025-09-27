@@ -9,13 +9,16 @@ console.log('process.env --- infra.ts');
 const baseProjectName = getRequiredEnvVar('PROJECT')
 const projectName = `${baseProjectName}-frontend`;
 // const version = getRequiredEnvVar('VERSION');
-const deployEnv = getRequiredEnvVar('DEPLOY_ENV') as 'dev' | 'staging' | 'prod';
+// get stage from context (passed via -c stage=XXX)
+
+const app = new cdk.App();
+
+const deployEnv = app.node.tryGetContext('stage') as 'dev' | 'staging' | 'prod';
+console.log('deployEnv from getContext stage', deployEnv);
 
 if (!['dev', 'staging', 'prod'].includes(deployEnv)) {
   throw new Error('DEPLOY_ENV must be one of: dev, staging, prod');
 }
-
-const app = new cdk.App();
 
 console.log('process.env.PROJECT', process.env.PROJECT);
 console.log('process.env.DEPLOY_ENV', process.env.DEPLOY_ENV);
