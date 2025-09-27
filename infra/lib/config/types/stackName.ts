@@ -1,0 +1,1 @@
+export type StackName = 'dev' | 'staging' | 'prod';
