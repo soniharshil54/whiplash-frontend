@@ -6,7 +6,7 @@ import './App.css'
 
 function App() {
   const [count, setCount] = useState(0)
-  const version = '1.0.9'
+  const version = '1.0.10'
 
   // Debug: Log environment variables
   console.log('Environment variables:', {

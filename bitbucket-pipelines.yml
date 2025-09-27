@@ -101,7 +101,7 @@ definitions:
           - npx cdk --version
           - npx cdk context --clear || true
           - npx cdk ls -c stage="${DEPLOY_ENV}"
-          - npx cdk deploy "${STACK_NAME}" --require-approval never -c stage="${DEPLOY_ENV}" -c version="${VERSION}"
+          - npx cdk deploy --require-approval never -c stage="${DEPLOY_ENV}" -c version="${VERSION}"
 
 pipelines:
   branches:
