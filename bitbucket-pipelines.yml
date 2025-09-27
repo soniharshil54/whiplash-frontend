@@ -61,6 +61,7 @@ definitions:
             cat .vite_env >> .env
             printf 'VITE_DEPLOY_ENV=%s\nVITE_BUILD_VERSION=%s\n' "$DEPLOY_ENV" "$VERSION" >> .env
             echo "Using Vite envs:" && awk -F= '{print $1"=***REDACTED***"}' .env
+          - cat .env
 
           # ECR login + build (no BuildKit) + push
           - aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
