@@ -117,3 +117,16 @@ pipelines:
           deployment: staging   # deployment tag ONLY here
       - step: *build-push
       - step: *deploy
+
+  custom:
+      destroy-prod:
+        - step:
+            <<: *init
+            deployment: prod
+        - step: *destroy
+
+      destroy-staging:
+        - step:
+            <<: *init
+            deployment: staging
+        - step: *destroy
