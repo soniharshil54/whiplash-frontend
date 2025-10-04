@@ -79,7 +79,6 @@ export class InfraStack extends cdk.Stack {
       repositoryName: repoName,
       healthCheck: config.deploymentConfig.targetGroup.healthCheck,
       publicLoadBalancer: true, // ALB in public subnets
-      environment: getEnvVars(['PROJECT', 'VERSION', 'DEPLOY_ENV', 'SAMPLE_VAR_KEY_1', 'SAMPLE_VAR_KEY_2']),
     });
 
     // App permissions: S3 RW on task role
@@ -88,5 +87,10 @@ export class InfraStack extends cdk.Stack {
     new cdk.CfnOutput(this, name(`${appType}URL`), {
       value: `http://${svc.loadBalancer.loadBalancerDnsName}`,
     });
+
+    new cdk.CfnOutput(this, name('FrontendAlbDns'), {
+      value: svc.loadBalancer.loadBalancerDnsName,
+    });
+
   }
 }
