@@ -62,8 +62,6 @@ export class InfraStack extends cdk.Stack {
     // S3 bucket (shared from common-infra)
     const bucket = s3.Bucket.fromBucketName(this, 'AppBucket', bucketName);
 
-    console.log('process.env ---', getAllEnvVars());
-
     // ─────────────────────────────────────────────────────────────────────────────
     // Service (pattern creates a **public ALB** in the VPC’s public subnets)
     const svc = createAlbFargateService(this, name(`${appType}Service`), {

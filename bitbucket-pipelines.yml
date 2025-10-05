@@ -42,6 +42,16 @@ definitions:
           - echo "DEPLOY_ENV=$(cat .deploy_env)" >> .ci_env
           - echo "OTHER_APP_TYPE=$OTHER_APP_TYPE" >> .ci_env
 
+          # Capture BUILD_TRIGGER setting (defaults to manual if not set)
+          - |
+            if [ -z "${BUILD_TRIGGER:-}" ]; then
+              echo "BUILD_TRIGGER not set, defaulting to manual"
+              echo "BUILD_TRIGGER=manual" >> .ci_env
+            else
+              echo "BUILD_TRIGGER=$BUILD_TRIGGER" >> .ci_env
+              echo "BUILD_TRIGGER is set to: $BUILD_TRIGGER"
+            fi
+
           # keep only VITE_* variables (from Deployment vars injected into this step)
           # write as KEY=VALUE lines so the build step can turn it into .env
           - |
@@ -67,6 +77,7 @@ definitions:
     - step: &build-push
         name: Build & Push
         services: [docker]
+        trigger: $BUILD_TRIGGER
         script:
           - apk add --no-cache aws-cli jq bash
           - set -euo pipefail
