@@ -40,5 +40,5 @@ new InfraStack(app, stage, {
   baseProjectName,
   imageTag: app.node.tryGetContext('version'),
   config,
-  appType: 'Frontend',
+  appType: 'frontend',
 });

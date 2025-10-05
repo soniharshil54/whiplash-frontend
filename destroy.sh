@@ -1,20 +1,34 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# load env variables from .env file if it exists
-if [ -f .env ]; then
-  export $(grep -v '^#' .env | xargs)
+# error if .cdk_env file is missing
+if [ ! -f .cdk_env ]; then
+  echo "Error: .cdk_env file not found!"
+  exit 1
 fi
+
+# load env variables from .cdk_env file
+export $(grep -v '^#' .cdk_env | xargs)
 
 echo "Using environment variables:"
 echo "  AWS_REGION: ${AWS_REGION}"
 echo "  DEPLOY_ENV: ${DEPLOY_ENV}"
 echo "  AWS_PROFILE: ${AWS_PROFILE}"
+echo "  PROJECT: ${PROJECT}"
+echo "  APP_TYPE: ${APP_TYPE}"
 
+# Validate required environment variables
+if [[ -z "${AWS_REGION}" || -z "${DEPLOY_ENV}" || -z "${PROJECT}" || -z "${APP_TYPE}" ]]; then
+  echo "Error: One or more required environment variables are missing."
+  echo "Please ensure AWS_REGION, DEPLOY_ENV, PROJECT, and APP_TYPE are set."
+  exit 1
+fi
+
+STACK_NAME="${PROJECT}-${APP_TYPE}-${DEPLOY_ENV}"
 INFRA_DIR="./infra"
 
 # ──────────────── CDK DEPLOY (update stack with new image tag) ────────────────
-echo "🚀 Destroying CloudFormation DEPLOY_ENV ${DEPLOY_ENV}"
+echo "🚀 Destroying CloudFormation stack ${STACK_NAME}"
 
 cd "${INFRA_DIR}"
 
@@ -23,4 +37,4 @@ cdk destroy \
   --require-approval never \
   --context stage="${DEPLOY_ENV}"
 
-echo "✅ Frontend destroyed successfully"
+echo "✅ ${STACK_NAME} destroyed successfully"

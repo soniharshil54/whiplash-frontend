@@ -16,7 +16,7 @@ interface InfraStackProps extends cdk.StackProps {
   config: Config;
   imageTag: string;
   baseProjectName: string;
-  appType: 'Backend' | 'Frontend';
+  appType: 'backend' | 'frontend';
 }
 
 export class InfraStack extends cdk.Stack {
@@ -24,7 +24,6 @@ export class InfraStack extends cdk.Stack {
     super(scope, id, props);
 
     const { stage, projectName, config, baseProjectName, appType } = props;
-    const appTypeLower = appType.toLowerCase();
     const name    = nameResource(projectName, stage);
     const account = cdk.Stack.of(this).account;
     const region  = cdk.Stack.of(this).region;
@@ -39,7 +38,7 @@ export class InfraStack extends cdk.Stack {
 
     // These can be tokens (resolved at deploy)
     const clusterName = ssm.StringParameter.valueForStringParameter(this, `/${baseProjectName}/${stage}/clusterName`);
-    const repoName    = ssm.StringParameter.valueForStringParameter(this, `/${baseProjectName}/${stage}/ecr${appType}RepoName`);
+    const repoName    = ssm.StringParameter.valueForStringParameter(this, `/${baseProjectName}/${stage}/${appType}EcrRepoName`);
     const bucketName  = ssm.StringParameter.valueForStringParameter(this, `/${baseProjectName}/${stage}/s3BucketName`);
 
     // Optional: if you also exported public/private subnet ids and want to force placement,
@@ -73,9 +72,9 @@ export class InfraStack extends cdk.Stack {
       memoryLimitMiB: config.deploymentConfig.container.memory,
       desiredCount: desired,
       image,
-      containerName: name(`${appTypeLower}-container`),
+      containerName: name(`${appType}-container`),
       containerPort: config.deploymentConfig.targetGroup.port,
-      serviceName: name(`${appTypeLower}-service`),
+      serviceName: name(`${appType}-service`),
       repositoryName: repoName,
       healthCheck: config.deploymentConfig.targetGroup.healthCheck,
       publicLoadBalancer: true, // ALB in public subnets
@@ -88,7 +87,7 @@ export class InfraStack extends cdk.Stack {
       value: `http://${svc.loadBalancer.loadBalancerDnsName}`,
     });
 
-    new cdk.CfnOutput(this, name('FrontendAlbDns'), {
+    new cdk.CfnOutput(this, name(`${appType}AlbDns`), {
       value: svc.loadBalancer.loadBalancerDnsName,
     });
 

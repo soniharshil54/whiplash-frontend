@@ -1,18 +1,49 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# load env variables from .env file if it exists
-if [ -f .env ]; then
-  export $(grep -v '^#' .env | xargs)
+# error if .cdk_env file is missing
+if [ ! -f .cdk_env ]; then
+  echo "Error: .cdk_env file not found!"
+  exit 1
+fi
+
+# load env variables from .cdk_env file
+export $(grep -v '^#' .cdk_env | xargs)
+
+# load env variables from .env file if APP_TYPE is 'backend'
+if [[ "${APP_TYPE}" == "backend" ]]; then
+  if [ -f .env ]; then
+    export $(grep -v '^#' .env | xargs)
+  fi
 fi
 
 echo "Using environment variables:"
 echo "  AWS_REGION: ${AWS_REGION}"
 echo "  DEPLOY_ENV: ${DEPLOY_ENV}"
 echo "  AWS_PROFILE: ${AWS_PROFILE}"
+echo "  PROJECT: ${PROJECT}"
+echo "  APP_TYPE: ${APP_TYPE}"
 
-REPO_NAME="${PROJECT}-${DEPLOY_ENV}-frontend"
-STACK_NAME="${PROJECT}-${DEPLOY_ENV}"
+# Validate required environment variables
+if [[ -z "${AWS_REGION}" || -z "${DEPLOY_ENV}" || -z "${PROJECT}" || -z "${APP_TYPE}" ]]; then
+  echo "Error: One or more required environment variables are missing."
+  echo "Please ensure AWS_REGION, DEPLOY_ENV, PROJECT, and APP_TYPE are set."
+  exit 1
+fi
+
+# Other app type should be 'frontend' if APP_TYPE is 'backend' and vice versa
+if [[ "${APP_TYPE}" == "backend" ]]; then
+  OTHER_APP_TYPE="frontend"
+elif [[ "${APP_TYPE}" == "frontend" ]]; then
+  OTHER_APP_TYPE="backend"
+else
+  echo "Error: APP_TYPE must be either 'backend' or 'frontend'"
+  exit 1
+fi
+
+REPO_NAME="${PROJECT}-${DEPLOY_ENV}-${APP_TYPE}"
+STACK_NAME="${PROJECT}-${APP_TYPE}-${DEPLOY_ENV}"
+CORE_STACK_NAME="${PROJECT}-${DEPLOY_ENV}"
 INFRA_DIR="./infra"
 
 # ──────────────── VERSION & IMAGE ────────────────
@@ -21,7 +52,7 @@ VERSION=$(cat VERSION)
 export VERSION
 IMAGE_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${REPO_NAME}:${VERSION}"
 
-echo "🚀 Deploying frontend version: ${VERSION}"
+echo "🚀 Deploying ${APP_TYPE} version: ${VERSION}"
 echo "📦 Image URI: ${IMAGE_URI}"
 echo "📂 Infra stack: ${STACK_NAME}"
 
@@ -44,30 +75,32 @@ cdk deploy \
   --context stage="${DEPLOY_ENV}" \
   --context version="${VERSION}"
 
-echo "✅ Frontend ${VERSION} deployed successfully"
+echo "✅ ${APP_TYPE} ${VERSION} deployed successfully"
 
-FRONTEND_ALB=$(aws cloudformation describe-stacks \
-  --stack-name whiplash-frontend-dev \
-  --query "Stacks[0].Outputs[?contains(OutputKey, 'FrontendAlbDns')].OutputValue | [0]" \
+APP_ALB_KEY="${APP_TYPE}AlbDns"
+APP_ALB=$(aws cloudformation describe-stacks \
+  --stack-name ${STACK_NAME} \
+  --query "Stacks[0].Outputs[?contains(OutputKey, '${APP_ALB_KEY}')].OutputValue | [0]" \
   --output text)
 
-if [ -z "$FRONTEND_ALB" ] || [ "$FRONTEND_ALB" = "None" ]; then
-  echo "❌ Error: Could not retrieve Frontend ALB DNS from CloudFormation outputs"
+if [[ -z "$APP_ALB" || "$APP_ALB" == "None" ]]; then
+  echo "❌ Error: Could not retrieve ${APP_TYPE} ALB DNS from CloudFormation outputs"
   exit 1
 fi
 
-echo "✅ Frontend ALB DNS: $FRONTEND_ALB"
+echo "✅ ${APP_TYPE} ALB DNS: $APP_ALB"
 
-echo "🚀 Updating core infrastructure stack ${PROJECT}-${DEPLOY_ENV}"
+echo "🚀 Updating core infrastructure stack ${CORE_STACK_NAME} with ${APP_TYPE} ALB DNS"
 
-parameterKey="FrontendAlbDns"
-echo "Parameter Key: $parameterKey"
+echo "${APP_TYPE} ALB Key: $APP_ALB_KEY, Value: $APP_ALB"
+OTHER_APP_ALB_KEY="${OTHER_APP_TYPE}AlbDns"
+echo "${OTHER_APP_TYPE} ALB Key: $OTHER_APP_ALB_KEY"
 aws cloudformation update-stack \
-  --stack-name ${PROJECT}-${DEPLOY_ENV} \
+  --stack-name ${CORE_STACK_NAME} \
   --use-previous-template \
   --parameters \
-    ParameterKey=$parameterKey,ParameterValue=$FRONTEND_ALB \
-    ParameterKey=BackendAlbDns,UsePreviousValue=true \
+    ParameterKey=$APP_ALB_KEY,ParameterValue=$APP_ALB \
+    ParameterKey=$OTHER_APP_ALB_KEY,UsePreviousValue=true \
     ParameterKey=EnableCustomDomains,UsePreviousValue=true \
     ParameterKey=CustomDomainsCsv,UsePreviousValue=true \
     ParameterKey=AcmCertificateArnUsEast1,UsePreviousValue=true \
@@ -75,6 +108,11 @@ aws cloudformation update-stack \
   --no-cli-pager \
   || echo "No updates needed or stack is already updating"
 
+echo "✅ Core infrastructure stack update initiated"
+echo "Waiting for stack update to complete..."
+
 # Wait for stack update to complete (optional)
 aws cloudformation wait stack-update-complete \
-  --stack-name ${PROJECT}-${DEPLOY_ENV}
+  --stack-name ${CORE_STACK_NAME}
+
+echo "✅ Core infrastructure stack ${CORE_STACK_NAME} updated successfully"

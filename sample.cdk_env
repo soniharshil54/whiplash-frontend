@@ -1,0 +1,11 @@
+PROJECT=whiplash
+DEPLOY_ENV=dev  # dev, prod, staging
+AWS_REGION=us-east-1
+AWS_PROFILE=soni-1214
+PORT=3000
+APP_TYPE=frontend   # frontend, backend
+
+# PROJECT=st-whiplash
+# DEPLOY_ENV=dev
+# AWS_REGION=us-west-2
+# AWS_PROFILE=st-7704
