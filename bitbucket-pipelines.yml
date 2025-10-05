@@ -77,7 +77,7 @@ definitions:
     - step: &build-push
         name: Build & Push
         services: [docker]
-        trigger: $BUILD_TRIGGER
+        trigger: ${BUILD_TRIGGER:=manual}
         script:
           - apk add --no-cache aws-cli jq bash
           - set -euo pipefail
