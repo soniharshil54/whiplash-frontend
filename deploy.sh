@@ -68,6 +68,9 @@ aws cloudformation update-stack \
   --parameters \
     ParameterKey=$parameterKey,ParameterValue=$FRONTEND_ALB \
     ParameterKey=BackendAlbDns,UsePreviousValue=true \
+    ParameterKey=EnableCustomDomains,UsePreviousValue=true \
+    ParameterKey=CustomDomainsCsv,UsePreviousValue=true \
+    ParameterKey=AcmCertificateArnUsEast1,UsePreviousValue=true \
   --capabilities CAPABILITY_IAM \
   --no-cli-pager \
   || echo "No updates needed or stack is already updating"
