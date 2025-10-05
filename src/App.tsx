@@ -31,8 +31,8 @@ function App() {
       <div className="card">
         <button onClick={() => setCount((count) => count + 1)}>
           count is {count} and version is {version}
-          and sample env key is {SAMPLE_ENV_KEY}
-          and api url is {API_URL}
+           and sample env key is {SAMPLE_ENV_KEY}
+           and api url is {API_URL}
         </button>
         <p>
           Edit <code>src/App.tsx</code> and save to test HMR

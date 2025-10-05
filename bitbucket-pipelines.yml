@@ -163,6 +163,11 @@ definitions:
           - echo "Waiting for stack update to complete..."
           - aws cloudformation wait stack-update-complete --stack-name ${CORE_STACK_NAME}
           - echo "✅ Core infrastructure stack ${CORE_STACK_NAME} updated successfully"
+          - echo "Now invalidate cloudfront cache"
+          - DISTRIBUTION_ID=$(aws cloudformation describe-stacks --stack-name ${CORE_STACK_NAME} --query "Stacks[0].Outputs[?contains(OutputKey, 'CloudFrontDistributionId')].OutputValue | [0]" --output text)
+          - echo "Creating invalidation for DISTRIBUTION_ID - $DISTRIBUTION_ID"
+          - aws cloudfront create-invalidation --distribution-id $DISTRIBUTION_ID --paths "/*" --no-cli-pager
+          - echo "Invalidation created for cloudfront distribution id $DISTRIBUTION_ID"
 
     - step: &destroy
         image: node:20-alpine
