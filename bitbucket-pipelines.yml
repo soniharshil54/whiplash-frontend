@@ -10,7 +10,18 @@ definitions:
         script:
           - apk add --no-cache bash coreutils
           - set -euo pipefail
-          - echo "DEPLOY_ENV - ${DEPLOY_ENV}"
+          - '[ -n "${AWS_REGION:-}" ] || { echo "AWS_REGION is required"; exit 1; }'
+          - '[ -n "${PROJECT:-}" ]    || { echo "PROJECT is required"; exit 1; }'
+          - '[ -n "${APP_TYPE:-}" ]    || { echo "APP_TYPE is required"; exit 1; }'
+          # set OTHER_APP_TYPE based on APP_TYPE
+          - |
+            if [ "$APP_TYPE" = "frontend" ]; then
+              OTHER_APP_TYPE="backend"
+            elif [ "$APP_TYPE" = "backend" ]; then
+              OTHER_APP_TYPE="frontend"
+            else
+              echo "❌ Unsupported APP_TYPE $APP_TYPE"; exit 1
+            fi
 
           # branch → deploy env
           - |
@@ -18,52 +29,68 @@ definitions:
               DEPLOY_ENV="prod"
             elif [ "$BITBUCKET_BRANCH" = "staging" ]; then
               DEPLOY_ENV="staging"
+            elif [ "$BITBUCKET_BRANCH" = "dev" ]; then
+              DEPLOY_ENV="dev"
             else
               echo "❌ Unsupported branch $BITBUCKET_BRANCH"; exit 1
             fi
             echo "$DEPLOY_ENV" > .deploy_env
+          
+          - >
+            env | grep -vE '^(BITBUCKET_|PIPES_|CI=|SHELL=|PWD=|HOME=|PATH=|SHLVL=|_=|HOSTNAME=|DOCKER_HOST=)'
+            > .ci_env
+          - echo "DEPLOY_ENV=$(cat .deploy_env)" >> .ci_env
+          - echo "OTHER_APP_TYPE=$OTHER_APP_TYPE" >> .ci_env
 
           # keep only VITE_* variables (from Deployment vars injected into this step)
           # write as KEY=VALUE lines so the build step can turn it into .env
           - |
-            : > .vite_env
-            while IFS='=' read -r k v; do
-              case "$k" in
-                VITE_*) printf '%s=%s\n' "$k" "$v" >> .vite_env ;;
-              esac
-            done < <(env)
+            if [ "$APP_TYPE" = "frontend" ]; then
+              : > .vite_env
+              while IFS='=' read -r k v; do
+                case "$k" in
+                  VITE_*) printf '%s=%s\n' "$k" "$v" >> .vite_env ;;
+                esac
+              done < <(env)
+            elif [ "$APP_TYPE" = "backend" ]; then
+              echo "No VITE_* vars needed for backend app"
+              : > .vite_env
+            else
+              echo "❌ Unsupported APP_TYPE $APP_TYPE"; exit 1
+            fi
+
         artifacts:
           - .deploy_env
           - .vite_env
+          - .ci_env
 
     - step: &build-push
-        name: Build & Push (frontend)
+        name: Build & Push
         services: [docker]
         script:
           - apk add --no-cache aws-cli jq bash
           - set -euo pipefail
 
-          - DEPLOY_ENV="$(cat .deploy_env)"
-
-          # required
-          - '[ -n "${AWS_REGION:-}" ] || { echo "AWS_REGION is required"; exit 1; }'
-          - '[ -n "${PROJECT:-}" ]    || { echo "PROJECT is required"; exit 1; }'
+          # source shared deployment env (allow unset during source)
+          - set +u; set -a; source .ci_env; set +a; set -u
 
           # image + repo
           - export DOCKER_DEFAULT_PLATFORM=linux/amd64
-          - REPO_NAME="${PROJECT}-${DEPLOY_ENV}-frontend"
+          - REPO_NAME="${PROJECT}-${DEPLOY_ENV}-${APP_TYPE}"
           - VERSION=$(cat VERSION)
           - AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           - IMAGE_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${REPO_NAME}:${VERSION}"
-
-          # Build .env from VITE_* deployment vars captured in init
+          
+          # Build .env from VITE_* deployment vars captured in init if APP_TYPE is frontend
           - |
-            : > .env
-            cat .vite_env >> .env
-            printf 'VITE_DEPLOY_ENV=%s\nVITE_BUILD_VERSION=%s\n' "$DEPLOY_ENV" "$VERSION" >> .env
-            echo "Using Vite envs:" && awk -F= '{print $1"=***REDACTED***"}' .env
-          - cat .env
-
+            if [ "$APP_TYPE" = "frontend" ]; then
+              : > .env
+              cat .vite_env >> .env
+              printf 'VITE_DEPLOY_ENV=%s\nVITE_BUILD_VERSION=%s\n' "$DEPLOY_ENV" "$VERSION" >> .env
+              echo "Using Vite envs:" && awk -F= '{print $1"=***REDACTED***"}' .env
+              cat .env
+            fi
+            
           # ECR login + build (no BuildKit) + push
           - aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
           - export DOCKER_BUILDKIT=0
@@ -77,6 +104,7 @@ definitions:
         artifacts:
           - .deploy_env
           - .version
+          - .ci_env
 
     - step: &deploy
         image: node:20-alpine
@@ -85,14 +113,14 @@ definitions:
           - apk add --no-cache aws-cli bash jq
           - set -euo pipefail
 
-          - export DEPLOY_ENV="$(cat .deploy_env)"
+          # source shared deployment env (allow unset during source)
+          - set +u; set -a; source .ci_env; set +a; set -u
+
           - echo "DEPLOY_ENV - ${DEPLOY_ENV}"
           - export VERSION="$(cat .version)"
 
-          - '[ -n "${AWS_REGION:-}" ] || { echo "AWS_REGION is required"; exit 1; }'
-          - '[ -n "${PROJECT:-}" ]    || { echo "PROJECT is required"; exit 1; }'
-
-          - STACK_NAME="${PROJECT}-frontend-${DEPLOY_ENV}"
+          - STACK_NAME="${PROJECT}-${APP_TYPE}-${DEPLOY_ENV}"
+          - CORE_STACK_NAME="${PROJECT}-${DEPLOY_ENV}"
           - echo "🛠 Deploying to stack ${STACK_NAME} (env ${DEPLOY_ENV}) with version ${VERSION}"
 
           # ensure infra deps are installed and deploy via CDK
@@ -102,6 +130,41 @@ definitions:
           - npx cdk context --clear || true
           - npx cdk ls -c stage="${DEPLOY_ENV}"
           - npx cdk deploy --require-approval never -c stage="${DEPLOY_ENV}" -c version="${VERSION}"
+
+          - APP_ALB_KEY="${APP_TYPE}AlbDns"
+          - APP_ALB=$(aws cloudformation describe-stacks \
+              --stack-name ${STACK_NAME} \
+              --query "Stacks[0].Outputs[?contains(OutputKey, '${APP_ALB_KEY}')].OutputValue | [0]" \
+              --output text)
+          - OTHER_APP_ALB_KEY="${OTHER_APP_TYPE}AlbDns"
+          - aws cloudformation update-stack \
+              --stack-name ${CORE_STACK_NAME} \
+              --use-previous-template \
+              --parameters \
+                ParameterKey=$APP_ALB_KEY,ParameterValue=$APP_ALB \
+                ParameterKey=$OTHER_APP_ALB_KEY,UsePreviousValue=true \
+                ParameterKey=EnableCustomDomains,UsePreviousValue=true \
+                ParameterKey=CustomDomainsCsv,UsePreviousValue=true \
+                ParameterKey=AcmCertificateArnUsEast1,UsePreviousValue=true \
+              --capabilities CAPABILITY_IAM \
+              --no-cli-pager \
+              || echo "No updates needed or stack is already updating"
+          - aws cloudformation wait stack-update-complete \
+              --stack-name ${CORE_STACK_NAME}
+          - echo "✅ Core infrastructure stack ${CORE_STACK_NAME} updated successfully"
+
+    - step: &destroy
+        image: node:20-alpine
+        name: Destroy (CDK)
+        trigger: manual
+        script:
+          - apk add --no-cache aws-cli bash jq
+          - set -euo pipefail
+          - set +u; set -a; source .ci_env; set +a; set -u
+          - DEPLOY_ENV=$(cat .deploy_env)
+          - cd infra
+          - npm ci
+          - npx cdk destroy -f -c stage="${DEPLOY_ENV}"
 
 pipelines:
   branches:
@@ -117,6 +180,13 @@ pipelines:
           deployment: staging   # deployment tag ONLY here
       - step: *build-push
       - step: *deploy
+    dev:
+      - step:
+          <<: *init
+          deployment: dev   # deployment tag ONLY here
+      - step: *build-push
+      - step: *deploy
+    
 
   custom:
       destroy-prod:
@@ -129,4 +199,10 @@ pipelines:
         - step:
             <<: *init
             deployment: staging
+        - step: *destroy
+
+      destroy-dev:
+        - step:
+            <<: *init
+            deployment: dev
         - step: *destroy
