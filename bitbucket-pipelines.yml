@@ -131,13 +131,23 @@ definitions:
           - npx cdk ls -c stage="${DEPLOY_ENV}"
           - npx cdk deploy --require-approval never -c stage="${DEPLOY_ENV}" -c version="${VERSION}"
 
+          - echo "✅ ${APP_TYPE} ${VERSION} deployed successfully"
+
           - APP_ALB_KEY="${APP_TYPE}AlbDns"
-          - APP_ALB=$(aws cloudformation describe-stacks \
-              --stack-name ${STACK_NAME} \
-              --query "Stacks[0].Outputs[?contains(OutputKey, '${APP_ALB_KEY}')].OutputValue | [0]" \
-              --output text)
+          - APP_ALB=$(aws cloudformation describe-stacks --stack-name ${STACK_NAME} --query "Stacks[0].Outputs[?contains(OutputKey, '${APP_ALB_KEY}')].OutputValue | [0]" --output text)
+          - |
+            if [[ -z "$APP_ALB" || "$APP_ALB" == "None" ]]; then
+              echo "❌ Error: Could not retrieve ${APP_TYPE} ALB DNS from CloudFormation outputs"
+              exit 1
+            fi
+          - echo "✅ ${APP_ALB_KEY} ALB DNS - $APP_ALB"
+          
+          - echo "🚀 Updating core infrastructure stack ${CORE_STACK_NAME} with ${APP_TYPE} ALB DNS"
+          - echo "${APP_TYPE} ALB Key - $APP_ALB_KEY, Value - $APP_ALB"
           - OTHER_APP_ALB_KEY="${OTHER_APP_TYPE}AlbDns"
-          - aws cloudformation update-stack \
+          - echo "${OTHER_APP_TYPE} ALB Key - $OTHER_APP_ALB_KEY"
+          - |
+            aws cloudformation update-stack \
               --stack-name ${CORE_STACK_NAME} \
               --use-previous-template \
               --parameters \
@@ -149,8 +159,9 @@ definitions:
               --capabilities CAPABILITY_IAM \
               --no-cli-pager \
               || echo "No updates needed or stack is already updating"
-          - aws cloudformation wait stack-update-complete \
-              --stack-name ${CORE_STACK_NAME}
+          - echo "✅ Core infrastructure stack update initiated"
+          - echo "Waiting for stack update to complete..."
+          - aws cloudformation wait stack-update-complete --stack-name ${CORE_STACK_NAME}
           - echo "✅ Core infrastructure stack ${CORE_STACK_NAME} updated successfully"
 
     - step: &destroy

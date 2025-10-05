@@ -6,12 +6,13 @@ import './App.css'
 
 function App() {
   const [count, setCount] = useState(0)
-  const version = '1.0.12'
+  const version = import.meta.env.VITE_BUILD_VERSION
 
   // Debug: Log environment variables
   console.log('Environment variables:', {
     VITE_API_URL: import.meta.env.VITE_API_URL,
     VITE_SAMPLE_ENV_KEY: import.meta.env.VITE_SAMPLE_ENV_KEY,
+    VITE_BUILD_VERSION: import.meta.env.VITE_BUILD_VERSION,
     SAMPLE_ENV_KEY,
     API_URL
   });
