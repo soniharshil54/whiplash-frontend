@@ -12,7 +12,7 @@ dist
 dist-ssr
 *.local
 .env*
-.cdk_env
+.cdk.env
 
 # Editor directories and files
 .vscode/*

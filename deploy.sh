@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# error if .cdk_env file is missing
-if [ ! -f .cdk_env ]; then
-  echo "Error: .cdk_env file not found!"
+# error if .cdk.env file is missing
+if [ ! -f .cdk.env ]; then
+  echo "Error: .cdk.env file not found!"
   exit 1
 fi
 
-# load env variables from .cdk_env file
-export $(grep -v '^#' .cdk_env | xargs)
+# load env variables from .cdk.env file
+export $(grep -v '^#' .cdk.env | xargs)
 
 # load env variables from .env file if APP_TYPE is 'backend'
 if [[ "${APP_TYPE}" == "backend" ]]; then
@@ -104,6 +104,8 @@ aws cloudformation update-stack \
     ParameterKey=EnableCustomDomains,UsePreviousValue=true \
     ParameterKey=CustomDomainsCsv,UsePreviousValue=true \
     ParameterKey=AcmCertificateArnUsEast1,UsePreviousValue=true \
+    ParameterKey=EnableAtlasEndpoint,UsePreviousValue=true \
+    ParameterKey=AtlasServiceName,UsePreviousValue=true \
   --capabilities CAPABILITY_IAM \
   --no-cli-pager \
   || echo "No updates needed or stack is already updating"

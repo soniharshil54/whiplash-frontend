@@ -20,6 +20,8 @@ export type Config = {
     };
     service: {
       desiredCount: number;
+      minCount: number;
+      maxCount: number;
     };
   };
 };

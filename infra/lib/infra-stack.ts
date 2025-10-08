@@ -7,7 +7,7 @@ import * as ecr from 'aws-cdk-lib/aws-ecr';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import { Config } from '../lib/config/types/config';
 
-import { nameResource, getAllEnvVars, getEnvVars } from './common';
+import { nameResource } from './common';
 import { createAlbFargateService } from './resources/services/alb-fargate';
 
 interface InfraStackProps extends cdk.StackProps {
@@ -30,6 +30,8 @@ export class InfraStack extends cdk.Stack {
 
     const imageTag = props.imageTag;
     const desired  = config.deploymentConfig.service.desiredCount;
+    const min = config.deploymentConfig.service.minCount;
+    const max = config.deploymentConfig.service.maxCount;
 
     // ─────────────────────────────────────────────────────────────────────────────
     // SSM reads
@@ -69,6 +71,8 @@ export class InfraStack extends cdk.Stack {
       cpu: config.deploymentConfig.container.cpu,
       memoryLimitMiB: config.deploymentConfig.container.memory,
       desiredCount: desired,
+      minCount: min,
+      maxCount: max,
       image,
       containerName: name(`${appType}-container`),
       containerPort: config.deploymentConfig.targetGroup.port,

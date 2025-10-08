@@ -11,6 +11,8 @@ export interface AlbFargateOptions {
   cpu: number;
   memoryLimitMiB: number;
   desiredCount: number;
+  minCount: number;
+  maxCount: number;
   image: ecs.ContainerImage;
   containerName: string;
   containerPort: number;
@@ -49,6 +51,17 @@ export function createAlbFargateService(
     serviceName: opts.serviceName,
     circuitBreaker: { rollback: true },
     healthCheckGracePeriod: cdk.Duration.seconds(opts.healthCheckGraceSec ?? 30),
+  });
+
+  const scaling = svc.service.autoScaleTaskCount({
+    minCapacity: 1,
+    maxCapacity: 2,
+  });
+
+  scaling.scaleOnCpuUtilization('CpuScaling', {
+    targetUtilizationPercent: 60,
+    scaleInCooldown: cdk.Duration.seconds(60),
+    scaleOutCooldown: cdk.Duration.seconds(60),
   });
 
   // Health checks
