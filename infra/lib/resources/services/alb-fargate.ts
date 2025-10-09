@@ -4,9 +4,10 @@ import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as ecsPatterns from 'aws-cdk-lib/aws-ecs-patterns';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
+import * as ec2 from 'aws-cdk-lib/aws-ec2'; // 👈 add
+import { getCloudFrontPlId } from '../helpers/index'
 
 export interface AlbFargateOptions {
-  // CHANGE: accept ICluster (works for imported clusters)
   cluster: ecs.ICluster;
   cpu: number;
   memoryLimitMiB: number;
@@ -17,8 +18,8 @@ export interface AlbFargateOptions {
   containerName: string;
   containerPort: number;
   serviceName: string;
-  repositoryName: string; // ECR repo to grant pull
-  healthCheck: { 
+  repositoryName: string;
+  healthCheck: {
     port: string;
     path: string;
     healthyThreshold: number;
@@ -37,7 +38,7 @@ export function createAlbFargateService(
   opts: AlbFargateOptions
 ): ecsPatterns.ApplicationLoadBalancedFargateService {
   const svc = new ecsPatterns.ApplicationLoadBalancedFargateService(scope, id, {
-    cluster: opts.cluster, // ecs.ICluster is what the pattern expects
+    cluster: opts.cluster,
     cpu: opts.cpu,
     memoryLimitMiB: opts.memoryLimitMiB,
     publicLoadBalancer: opts.publicLoadBalancer ?? true,
@@ -51,11 +52,14 @@ export function createAlbFargateService(
     serviceName: opts.serviceName,
     circuitBreaker: { rollback: true },
     healthCheckGracePeriod: cdk.Duration.seconds(opts.healthCheckGraceSec ?? 30),
+
+    // 🔒 prevent CDK from adding 0.0.0.0/0 to the ALB SG
+    openListener: false, // 👈 add
   });
 
   const scaling = svc.service.autoScaleTaskCount({
-    minCapacity: 1,
-    maxCapacity: 2,
+    minCapacity: opts.minCount ?? 1,
+    maxCapacity: opts.maxCount ?? 2,
   });
 
   scaling.scaleOnCpuUtilization('CpuScaling', {
@@ -81,6 +85,16 @@ export function createAlbFargateService(
   );
   const repo = ecr.Repository.fromRepositoryName(scope, `${id}RepoImport`, opts.repositoryName);
   repo.grantPull(svc.taskDefinition.executionRole!);
+
+  // ── 🔐 ALB SG: allow ONLY CloudFront (80/443) ────────────────────────────────
+  const plId = getCloudFrontPlId(scope, `${id}CfPlLookup`);
+  const albSg = svc.loadBalancer.connections.securityGroups[0];
+
+  // albSg.addIngressRule(ec2.Peer.prefixList(plId), ec2.Port.tcp(443), 'Allow CloudFront to ALB 443');
+  albSg.addIngressRule(ec2.Peer.prefixList(plId), ec2.Port.tcp(80),  'Allow CloudFront to ALB 80');
+
+  // (optional) outbound lock-down if you wish:
+  // albSg.addEgressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(443), 'Egress 443');
 
   return svc;
 }
