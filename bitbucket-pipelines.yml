@@ -3,6 +3,10 @@ options:
   docker: true
 
 definitions:
+  services:
+    docker:
+      memory: 3072   # 4 GB for the DinD daemon // change to 2GB and check, remove 2x and check
+  steps:
   steps:
     - step: &init
         image: alpine:3.20
@@ -129,6 +133,7 @@ definitions:
 
           # ensure infra deps are installed and deploy via CDK
           - cd infra
+          - export NODE_OPTIONS="--max-old-space-size=4096"
           - npm ci
           - npx cdk --version
           - npx cdk context --clear || true
@@ -185,6 +190,7 @@ definitions:
           - set +u; set -a; source .ci_env; set +a; set -u
           - DEPLOY_ENV=$(cat .deploy_env)
           - cd infra
+          - export NODE_OPTIONS="--max-old-space-size=4096"
           - npm ci
           - npx cdk destroy -f -c stage="${DEPLOY_ENV}"
 
