@@ -4,8 +4,11 @@ import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as ecsPatterns from 'aws-cdk-lib/aws-ecs-patterns';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
-import * as ec2 from 'aws-cdk-lib/aws-ec2'; // 👈 add
-import { getCloudFrontPlId } from '../helpers/index'
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
+import * as route53 from 'aws-cdk-lib/aws-route53';
+import * as acm from 'aws-cdk-lib/aws-certificatemanager';
+import { getCloudFrontPlId } from '../helpers/index';
 
 export interface AlbFargateOptions {
   cluster: ecs.ICluster;
@@ -32,11 +35,52 @@ export interface AlbFargateOptions {
   environment?: { [key: string]: string };
 }
 
+export interface AlbFargateReturn {
+  service: ecsPatterns.ApplicationLoadBalancedFargateService;
+  tlsEnabledParam: cdk.CfnParameter;
+  tlsEnabledCondition: cdk.CfnCondition;
+  certificateArnParam: cdk.CfnParameter;
+  domainNameParam: cdk.CfnParameter;
+  hostedZoneNameParam: cdk.CfnParameter;
+}
+
 export function createAlbFargateService(
   scope: Construct,
   id: string,
   opts: AlbFargateOptions
-): ecsPatterns.ApplicationLoadBalancedFargateService {
+): AlbFargateReturn {
+  
+  // ── CFN Parameters for TLS configuration ─────────────────────────────────────
+  const tlsEnabledParam = new cdk.CfnParameter(scope, 'TlsEnabled', {
+    type: 'String',
+    allowedValues: ['true', 'false'],
+    default: 'false',
+    description: 'Enable HTTPS/TLS for ALB (creates Route53 record + HTTPS listener)',
+  });
+  tlsEnabledParam.overrideLogicalId('TlsEnabled');
+
+  const certificateArnParam = new cdk.CfnParameter(scope, 'CertificateArn', {
+    type: 'String',
+    default: '',
+    description: 'ACM certificate ARN for ALB (required if TlsEnabled=true)',
+  });
+  certificateArnParam.overrideLogicalId('CertificateArn');
+
+  const domainNameParam = new cdk.CfnParameter(scope, 'AlbDomainName', {
+    type: 'String',
+    default: '',
+    description: 'Domain name for ALB (e.g., backend.alb.yourdomain.com)',
+  });
+  domainNameParam.overrideLogicalId('AlbDomainName');
+
+  const hostedZoneNameParam = new cdk.CfnParameter(scope, 'HostedZoneName', {
+    type: 'String',
+    default: '',
+    description: 'Route53 hosted zone name (e.g., alb.yourdomain.com)',
+  });
+  hostedZoneNameParam.overrideLogicalId('HostedZoneName');
+
+  // ── Create the ALB Fargate Service ───────────────────────────────────────────
   const svc = new ecsPatterns.ApplicationLoadBalancedFargateService(scope, id, {
     cluster: opts.cluster,
     cpu: opts.cpu,
@@ -52,11 +96,10 @@ export function createAlbFargateService(
     serviceName: opts.serviceName,
     circuitBreaker: { rollback: true },
     healthCheckGracePeriod: cdk.Duration.seconds(opts.healthCheckGraceSec ?? 30),
-
-    // 🔒 prevent CDK from adding 0.0.0.0/0 to the ALB SG
-    openListener: false, // 👈 add
+    openListener: false,
   });
 
+  // ── Auto Scaling ─────────────────────────────────────────────────────────────
   const scaling = svc.service.autoScaleTaskCount({
     minCapacity: opts.minCount ?? 1,
     maxCapacity: opts.maxCount ?? 2,
@@ -68,7 +111,7 @@ export function createAlbFargateService(
     scaleOutCooldown: cdk.Duration.seconds(60),
   });
 
-  // Health checks
+  // ── Health Check ─────────────────────────────────────────────────────────────
   svc.targetGroup.configureHealthCheck({
     port: opts.healthCheck.port,
     path: opts.healthCheck.path,
@@ -79,22 +122,81 @@ export function createAlbFargateService(
     unhealthyThresholdCount: opts.healthCheck.unhealthyThreshold,
   });
 
-  // Execution role → ECR pull
+  // ── ECR Permissions ──────────────────────────────────────────────────────────
   svc.taskDefinition.executionRole!.addManagedPolicy(
     iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AmazonECSTaskExecutionRolePolicy')
   );
   const repo = ecr.Repository.fromRepositoryName(scope, `${id}RepoImport`, opts.repositoryName);
   repo.grantPull(svc.taskDefinition.executionRole!);
 
-  // ── 🔐 ALB SG: allow ONLY CloudFront (80/443) ────────────────────────────────
-  const plId = getCloudFrontPlId(scope, `${id}CfPlLookup`);
+  // ── Security Group Rules (0.0.0.0/0 for both HTTP and HTTPS) ────────────────
   const albSg = svc.loadBalancer.connections.securityGroups[0];
 
-  // albSg.addIngressRule(ec2.Peer.prefixList(plId), ec2.Port.tcp(443), 'Allow CloudFront to ALB 443');
-  albSg.addIngressRule(ec2.Peer.prefixList(plId), ec2.Port.tcp(80),  'Allow CloudFront to ALB 80');
+  // Conditions for TLS
+  const tlsEnabledCondition = new cdk.CfnCondition(scope, `${id}TlsEnabledCondition`, {
+    expression: cdk.Fn.conditionEquals(tlsEnabledParam.valueAsString, 'true'),
+  });
 
-  // (optional) outbound lock-down if you wish:
-  // albSg.addEgressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(443), 'Egress 443');
+  const httpOnlyCondition = new cdk.CfnCondition(scope, `${id}HttpOnlyCondition`, {
+    expression: cdk.Fn.conditionEquals(tlsEnabledParam.valueAsString, 'false'),
+  });
 
-  return svc;
+  // HTTP (port 80) ingress rule - only when TLS disabled
+  const httpIngressRule = new ec2.CfnSecurityGroupIngress(scope, `${id}HttpIngress`, {
+    groupId: albSg.securityGroupId,
+    ipProtocol: 'tcp',
+    fromPort: 80,
+    toPort: 80,
+    cidrIp: '0.0.0.0/0',
+    description: 'Allow HTTP from anywhere',
+  });
+  httpIngressRule.cfnOptions.condition = httpOnlyCondition;
+
+  // HTTPS (port 443) ingress rule - only when TLS enabled
+  const httpsIngressRule = new ec2.CfnSecurityGroupIngress(scope, `${id}HttpsIngress`, {
+    groupId: albSg.securityGroupId,
+    ipProtocol: 'tcp',
+    fromPort: 443,
+    toPort: 443,
+    cidrIp: '0.0.0.0/0',
+    description: 'Allow HTTPS from anywhere',
+  });
+  httpsIngressRule.cfnOptions.condition = tlsEnabledCondition;
+
+  // ── HTTPS Listener (conditional) using L1 ────────────────────────────────────
+  const httpsListener = new elbv2.CfnListener(scope, `${id}HttpsListener`, {
+    loadBalancerArn: svc.loadBalancer.loadBalancerArn,
+    port: 443,
+    protocol: 'HTTPS',
+    certificates: [{
+      certificateArn: certificateArnParam.valueAsString,
+    }],
+    defaultActions: [{
+      type: 'forward',
+      targetGroupArn: svc.targetGroup.targetGroupArn,
+    }],
+  });
+  httpsListener.cfnOptions.condition = tlsEnabledCondition;
+
+  // ── Route 53 Record (conditional) ────────────────────────────────────────────
+  const route53Record = new route53.CfnRecordSet(scope, `${id}Route53Record`, {
+    hostedZoneName: cdk.Fn.join('', [hostedZoneNameParam.valueAsString, '.']), // Must end with dot
+    name: domainNameParam.valueAsString,
+    type: 'A',
+    aliasTarget: {
+      dnsName: svc.loadBalancer.loadBalancerDnsName,
+      hostedZoneId: svc.loadBalancer.loadBalancerCanonicalHostedZoneId,
+      evaluateTargetHealth: true,
+    },
+  });
+  route53Record.cfnOptions.condition = tlsEnabledCondition;
+
+  return {
+    service: svc,
+    tlsEnabledParam,
+    tlsEnabledCondition,
+    certificateArnParam,
+    domainNameParam,
+    hostedZoneNameParam,
+  };
 }

@@ -7,47 +7,99 @@ definitions:
     docker:
       memory: 3072   # 4 GB for the DinD daemon // change to 2GB and check, remove 2x and check
   steps:
-  steps:
     - step: &init
         image: alpine:3.20
         name: Init (capture deployment env)
         script:
-          - apk add --no-cache bash coreutils
+          - apk add --no-cache bash coreutils aws-cli jq
           - set -euo pipefail
-          - '[ -n "${AWS_REGION:-}" ] || { echo "AWS_REGION is required"; exit 1; }'
-          - '[ -n "${PROJECT:-}" ]    || { echo "PROJECT is required"; exit 1; }'
-          - '[ -n "${APP_TYPE:-}" ]    || { echo "APP_TYPE is required"; exit 1; }'
-          # set OTHER_APP_TYPE based on APP_TYPE
+
+          # Validate env variables
+          - echo "Using environment variables-"
+          - echo "  AWS_REGION - ${AWS_REGION}"
+          - echo "  DEPLOY_ENV - ${DEPLOY_ENV}"
+          - echo "  PROJECT - ${PROJECT}"
+          - echo "  APP_TYPE -  ${APP_TYPE}"
+
+          # Validate env variables
           - |
-            if [ "$APP_TYPE" = "frontend" ]; then
-              OTHER_APP_TYPE="backend"
-            elif [ "$APP_TYPE" = "backend" ]; then
-              OTHER_APP_TYPE="frontend"
-            else
-              echo "❌ Unsupported APP_TYPE $APP_TYPE"; exit 1
+            if [[ -z "${AWS_REGION}" || -z "${DEPLOY_ENV}" || -z "${PROJECT}" || -z "${APP_TYPE}" ]]; then
+              echo "Error: One or more required environment variables are missing."
+              echo "Please ensure AWS_REGION, DEPLOY_ENV, PROJECT, and APP_TYPE are set."
+              exit 1
             fi
 
-          # branch → deploy env
+          # validate aws credentials
+          - export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          - echo "  AWS_ACCOUNT_ID - ${AWS_ACCOUNT_ID}"
+
+          # set OTHER_APP_TYPE based on APP_TYPE
           - |
-            if [ "$BITBUCKET_BRANCH" = "main" ]; then
-              DEPLOY_ENV="prod"
-            elif [ "$BITBUCKET_BRANCH" = "staging" ]; then
-              DEPLOY_ENV="staging"
-            elif [ "$BITBUCKET_BRANCH" = "dev" ]; then
-              DEPLOY_ENV="dev"
+            if [[ "${APP_TYPE}" == "backend" ]]; then
+              export OTHER_APP_TYPE="frontend"
+            elif [[ "${APP_TYPE}" == "frontend" ]]; then
+              export OTHER_APP_TYPE="backend"
             else
-              echo "❌ Unsupported branch $BITBUCKET_BRANCH"; exit 1
+              echo "Error: APP_TYPE must be either 'backend' or 'frontend'"
+              exit 1
             fi
-            echo "$DEPLOY_ENV" > .deploy_env
-          
+
+          #  app alb dns keys for parameters to be passed on core stack
+          - export APP_ALB_KEY="${APP_TYPE}AlbDns"
+          - export OTHER_APP_ALB_KEY="${OTHER_APP_TYPE}AlbDns"
+
+          - # Automatically derive ALB_DOMAIN_NAME if HOSTED_ZONE_NAME is provided
+          - |
+            if [[ -n "${HOSTED_ZONE_NAME:-}" ]]; then
+              export ALB_DOMAIN_NAME="${APP_TYPE}.${HOSTED_ZONE_NAME}"
+              echo "Derived ALB_DOMAIN_NAME: ${ALB_DOMAIN_NAME}"
+            else
+              export ALB_DOMAIN_NAME=""
+            fi
+
+          # Derive protocol from TLS_ENABLED (true/1/yes → HTTPS, else HTTP)
+          - _tls="${TLS_ENABLED:-false}"
+          - _tls_lower="$(echo "${_tls}" | tr '[:upper:]' '[:lower:]')"
+          - |
+            if [[ "${_tls_lower}" == "true" || "${_tls_lower}" == "1" || "${_tls_lower}" == "yes" ]]; then
+              export ORIGIN_PROTOCOL="HTTPS"
+            else
+              export ORIGIN_PROTOCOL="HTTP"
+            fi
+
+          - echo "🔐 Origin protocol for ${APP_TYPE} - ${ORIGIN_PROTOCOL}"
+          - export APP_PROTOCOL_KEY="${APP_TYPE}AlbProtocol"
+          - echo "${APP_TYPE} Protocol Key - $APP_PROTOCOL_KEY"
+          - export OTHER_APP_PROTOCOL_KEY="${OTHER_APP_TYPE}AlbProtocol"
+          - echo "${OTHER_APP_TYPE} Protocol Key - $OTHER_APP_PROTOCOL_KEY"
+
+          - # TLS validation block
+          - |
+            if [[ "${_tls_lower}" == "true" || "${_tls_lower}" == "1" || "${_tls_lower}" == "yes" ]]; then
+              if [[ -z "${ALB_DOMAIN_NAME:-}" || -z "${HOSTED_ZONE_NAME:-}" || -z "${CERTIFICATE_ARN:-}" ]]; then
+                echo "❌ Error: TLS_ENABLED is true, so ALB_DOMAIN_NAME, HOSTED_ZONE_NAME, and CERTIFICATE_ARN are required."
+                echo "Please ensure these environment variables are set correctly before proceeding."
+                exit 1
+              fi
+            fi
+
+          # Stack name and repo ecr repo name 
+          - export ECR_REPO_NAME="${PROJECT}-${DEPLOY_ENV}-${APP_TYPE}"
+          - export STACK_NAME="${PROJECT}-${APP_TYPE}-${DEPLOY_ENV}"
+          - export CORE_STACK_NAME="${PROJECT}-${DEPLOY_ENV}"
+          - export INFRA_DIR="./infra"
+
+          # VERSION & IMAGE
+          - export VERSION=$(cat VERSION)
+          - export IMAGE_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}:${VERSION}"
+
+          # put all the env vars in .ci_env file so that later stages can use them
           - |
             env | grep -vE '^(BITBUCKET_|PIPES_|CI=|SHELL=|PWD=|HOME=|PATH=|SHLVL=|_=|HOSTNAME=|DOCKER_HOST=)' | while IFS= read -r line; do
               key="${line%%=*}"
               value="${line#*=}"
               echo "${key}='${value}'" >> .ci_env
             done
-          - echo "DEPLOY_ENV=$(cat .deploy_env)" >> .ci_env
-          - echo "OTHER_APP_TYPE=$OTHER_APP_TYPE" >> .ci_env
 
           # keep only VITE_* variables (from Deployment vars injected into this step)
           # write as KEY=VALUE lines so the build step can turn it into .env
@@ -67,7 +119,6 @@ definitions:
             fi
 
         artifacts:
-          - .deploy_env
           - .vite_env
           - .ci_env
 
@@ -82,12 +133,8 @@ definitions:
           # source shared deployment env (allow unset during source)
           - set +u; set -a; source .ci_env; set +a; set -u
 
-          # image + repo
+          # set image platform
           - export DOCKER_DEFAULT_PLATFORM=linux/amd64
-          - REPO_NAME="${PROJECT}-${DEPLOY_ENV}-${APP_TYPE}"
-          - VERSION=$(cat VERSION)
-          - AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          - IMAGE_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${REPO_NAME}:${VERSION}"
           
           # Build .env from VITE_* deployment vars captured in init if APP_TYPE is frontend
           - |
@@ -103,15 +150,10 @@ definitions:
           - aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
           - export DOCKER_BUILDKIT=0
           - export COMPOSE_DOCKER_CLI_BUILD=0
-          - export IMAGE_URI
           - docker compose -f docker-compose.build.yml build
           - docker push "${IMAGE_URI}"
 
-          # hand off to deploy
-          - echo "${VERSION}" > .version
         artifacts:
-          - .deploy_env
-          - .version
           - .ci_env
 
     - step: &deploy
@@ -124,15 +166,10 @@ definitions:
           # source shared deployment env (allow unset during source)
           - set +u; set -a; source .ci_env; set +a; set -u
 
-          - echo "DEPLOY_ENV - ${DEPLOY_ENV}"
-          - export VERSION="$(cat .version)"
-
-          - STACK_NAME="${PROJECT}-${APP_TYPE}-${DEPLOY_ENV}"
-          - CORE_STACK_NAME="${PROJECT}-${DEPLOY_ENV}"
           - echo "🛠 Deploying to stack ${STACK_NAME} (env ${DEPLOY_ENV}) with version ${VERSION}"
 
           # ensure infra deps are installed and deploy via CDK
-          - cd infra
+          - cd ${INFRA_DIR}
           - export NODE_OPTIONS="--max-old-space-size=4096"
           - npm ci
           - npx cdk --version
@@ -142,18 +179,16 @@ definitions:
 
           - echo "✅ ${APP_TYPE} ${VERSION} deployed successfully"
 
-          - APP_ALB_KEY="${APP_TYPE}AlbDns"
           - APP_ALB=$(aws cloudformation describe-stacks --stack-name ${STACK_NAME} --query "Stacks[0].Outputs[?contains(OutputKey, '${APP_ALB_KEY}')].OutputValue | [0]" --output text)
           - |
             if [[ -z "$APP_ALB" || "$APP_ALB" == "None" ]]; then
               echo "❌ Error: Could not retrieve ${APP_TYPE} ALB DNS from CloudFormation outputs"
               exit 1
             fi
-          - echo "✅ ${APP_ALB_KEY} ALB DNS - $APP_ALB"
+          - echo "✅ ${APP_ALB} ALB DNS - $APP_ALB"
           
           - echo "🚀 Updating core infrastructure stack ${CORE_STACK_NAME} with ${APP_TYPE} ALB DNS"
           - echo "${APP_TYPE} ALB Key - $APP_ALB_KEY, Value - $APP_ALB"
-          - OTHER_APP_ALB_KEY="${OTHER_APP_TYPE}AlbDns"
           - echo "${OTHER_APP_TYPE} ALB Key - $OTHER_APP_ALB_KEY"
           - |
             aws cloudformation update-stack \
@@ -162,6 +197,8 @@ definitions:
               --parameters \
                 ParameterKey=$APP_ALB_KEY,ParameterValue=$APP_ALB \
                 ParameterKey=$OTHER_APP_ALB_KEY,UsePreviousValue=true \
+                ParameterKey=$APP_PROTOCOL_KEY,ParameterValue=$ORIGIN_PROTOCOL \
+                ParameterKey=$OTHER_APP_PROTOCOL_KEY,UsePreviousValue=true \
                 ParameterKey=EnableCustomDomains,UsePreviousValue=true \
                 ParameterKey=CustomDomainsCsv,UsePreviousValue=true \
                 ParameterKey=AcmCertificateArnUsEast1,UsePreviousValue=true \
@@ -170,11 +207,13 @@ definitions:
               --capabilities CAPABILITY_IAM \
               --no-cli-pager \
               || echo "No updates needed or stack is already updating"
+
           - echo "✅ Core infrastructure stack update initiated"
           - echo "Waiting for stack update to complete..."
           - aws cloudformation wait stack-update-complete --stack-name ${CORE_STACK_NAME}
           - echo "✅ Core infrastructure stack ${CORE_STACK_NAME} updated successfully"
-          - echo "Now invalidate cloudfront cache"
+
+          - echo "Invalidate cloudfront cache"
           - DISTRIBUTION_ID=$(aws cloudformation describe-stacks --stack-name ${CORE_STACK_NAME} --query "Stacks[0].Outputs[?contains(OutputKey, 'CloudFrontDistributionId')].OutputValue | [0]" --output text)
           - echo "Creating invalidation for DISTRIBUTION_ID - $DISTRIBUTION_ID"
           - aws cloudfront create-invalidation --distribution-id $DISTRIBUTION_ID --paths "/*" --no-cli-pager
@@ -188,8 +227,7 @@ definitions:
           - apk add --no-cache aws-cli bash jq
           - set -euo pipefail
           - set +u; set -a; source .ci_env; set +a; set -u
-          - DEPLOY_ENV=$(cat .deploy_env)
-          - cd infra
+          - cd ${INFRA_DIR}
           - export NODE_OPTIONS="--max-old-space-size=4096"
           - npm ci
           - npx cdk destroy -f -c stage="${DEPLOY_ENV}"

@@ -66,7 +66,7 @@ export class InfraStack extends cdk.Stack {
 
     // ─────────────────────────────────────────────────────────────────────────────
     // Service (pattern creates a **public ALB** in the VPC’s public subnets)
-    const svc = createAlbFargateService(this, name(`${appType}Service`), {
+    const result = createAlbFargateService(this, name(`${appType}Service`), {
       cluster,
       cpu: config.deploymentConfig.container.cpu,
       memoryLimitMiB: config.deploymentConfig.container.memory,
@@ -82,15 +82,41 @@ export class InfraStack extends cdk.Stack {
       publicLoadBalancer: true, // ALB in public subnets
     });
 
-    // App permissions: S3 RW on task role
-    bucket.grantReadWrite(svc.taskDefinition.taskRole);
+    const svc = result.service;
 
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Outputs (conditional based on TLS enabled)
+    // ─────────────────────────────────────────────────────────────────────────────
     new cdk.CfnOutput(this, name(`${appType}URL`), {
-      value: `http://${svc.loadBalancer.loadBalancerDnsName}`,
+      value: cdk.Fn.conditionIf(
+        result.tlsEnabledCondition.logicalId,  // 👈 Use condition's logicalId
+        `https://${result.domainNameParam.valueAsString}`,
+        `http://${svc.loadBalancer.loadBalancerDnsName}`
+      ).toString(),
+      description: `${appType} URL (HTTPS if TLS enabled, otherwise HTTP ALB DNS)`,
     });
 
     new cdk.CfnOutput(this, name(`${appType}AlbDns`), {
+      value: cdk.Fn.conditionIf(
+        result.tlsEnabledCondition.logicalId,  // 👈 Use condition's logicalId
+        `${result.domainNameParam.valueAsString}`,
+        `${svc.loadBalancer.loadBalancerDnsName}`
+      ).toString(),
+      description: `${appType} ALB DNS name`,
+    });
+
+    new cdk.CfnOutput(this, name(`${appType}AlbAwsDns`), {
       value: svc.loadBalancer.loadBalancerDnsName,
+      description: `${appType} ALB DNS name`,
+    });
+
+    new cdk.CfnOutput(this, name(`${appType}CustomDomain`), {
+      value: cdk.Fn.conditionIf(
+        result.tlsEnabledCondition.logicalId,  // 👈 Use condition's logicalId
+        result.domainNameParam.valueAsString,
+        'N/A - TLS not enabled'
+      ).toString(),
+      description: `${appType} custom domain (only if TLS enabled)`,
     });
 
   }
