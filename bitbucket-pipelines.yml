@@ -175,7 +175,7 @@ definitions:
           - npx cdk --version
           - npx cdk context --clear || true
           - npx cdk ls -c stage="${DEPLOY_ENV}"
-          - npx cdk deploy --require-approval never -c stage="${DEPLOY_ENV}" -c version="${VERSION}"
+          - npx cdk deploy --require-approval never -c stage="${DEPLOY_ENV}" -c version="${VERSION}" --parameters TlsEnabled="${TLS_ENABLED:-false}" --parameters AlbDomainName="${ALB_DOMAIN_NAME:-}" --parameters HostedZoneName="${HOSTED_ZONE_NAME:-}" --parameters CertificateArn="${CERTIFICATE_ARN:-}"
 
           - echo "✅ ${APP_TYPE} ${VERSION} deployed successfully"
 
