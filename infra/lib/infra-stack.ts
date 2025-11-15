@@ -28,6 +28,10 @@ export class InfraStack extends cdk.Stack {
     const account = cdk.Stack.of(this).account;
     const region  = cdk.Stack.of(this).region;
 
+    cdk.Tags.of(this).add('project', projectName);
+    cdk.Tags.of(this).add('stack', stage);
+    cdk.Tags.of(this).add('baseProject', baseProjectName);
+
     const imageTag = props.imageTag;
     const desired  = config.deploymentConfig.service.desiredCount;
     const min = config.deploymentConfig.service.minCount;

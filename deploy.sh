@@ -148,6 +148,7 @@ aws cloudformation update-stack \
     ParameterKey=$OTHER_APP_ALB_KEY,UsePreviousValue=true \
     ParameterKey=$APP_PROTOCOL_KEY,ParameterValue=$ORIGIN_PROTOCOL \
     ParameterKey=$OTHER_APP_PROTOCOL_KEY,UsePreviousValue=true \
+    ParameterKey=HostedZoneName,UsePreviousValue=true \
     ParameterKey=EnableCustomDomains,UsePreviousValue=true \
     ParameterKey=CustomDomainsCsv,UsePreviousValue=true \
     ParameterKey=AcmCertificateArnUsEast1,UsePreviousValue=true \
