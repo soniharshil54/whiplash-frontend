@@ -132,36 +132,16 @@ export function createAlbFargateService(
   // ── Security Group Rules (0.0.0.0/0 for both HTTP and HTTPS) ────────────────
   const albSg = svc.loadBalancer.connections.securityGroups[0];
 
-  // Conditions for TLS
+  // TLS condition
   const tlsEnabledCondition = new cdk.CfnCondition(scope, `${id}TlsEnabledCondition`, {
     expression: cdk.Fn.conditionEquals(tlsEnabledParam.valueAsString, 'true'),
   });
 
-  const httpOnlyCondition = new cdk.CfnCondition(scope, `${id}HttpOnlyCondition`, {
-    expression: cdk.Fn.conditionEquals(tlsEnabledParam.valueAsString, 'false'),
-  });
-
-  // HTTP (port 80) ingress rule - only when TLS disabled
-  const httpIngressRule = new ec2.CfnSecurityGroupIngress(scope, `${id}HttpIngress`, {
-    groupId: albSg.securityGroupId,
-    ipProtocol: 'tcp',
-    fromPort: 80,
-    toPort: 80,
-    cidrIp: '0.0.0.0/0',
-    description: 'Allow HTTP from anywhere',
-  });
-  httpIngressRule.cfnOptions.condition = httpOnlyCondition;
-
-  // HTTPS (port 443) ingress rule - only when TLS enabled
-  const httpsIngressRule = new ec2.CfnSecurityGroupIngress(scope, `${id}HttpsIngress`, {
-    groupId: albSg.securityGroupId,
-    ipProtocol: 'tcp',
-    fromPort: 443,
-    toPort: 443,
-    cidrIp: '0.0.0.0/0',
-    description: 'Allow HTTPS from anywhere',
-  });
-  httpsIngressRule.cfnOptions.condition = tlsEnabledCondition;
+  albSg.addIngressRule(
+    ec2.Peer.prefixList(getCloudFrontPlId(scope, `${id}CfPl`)),
+    ec2.Port.tcpRange(80, 443),
+    'Allow CloudFront to ALB 80 to 443'
+  );
 
   // ── HTTPS Listener (conditional) using L1 ────────────────────────────────────
   const httpsListener = new elbv2.CfnListener(scope, `${id}HttpsListener`, {
